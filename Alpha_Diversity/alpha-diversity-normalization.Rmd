@@ -1,0 +1,429 @@
+---
+title: "alpha-diversity-normalization"
+author: "Michael Sieler"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    theme: united
+    highlight: tango
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+The code should be able to be ran as is after you've installed the required libraries. I included a built-in dataset from the `Phyloseq` package called `GlobalPatterns` that will allow you to test the script before using your own phyloseq object. 
+
+
+# Setup Environment
+```{r setup, include=FALSE}
+# Any default options you want for your Knitted document goes here
+
+knitr::opts_chunk$set(echo = TRUE)
+
+  
+```
+
+
+```{r install-libraries, eval=FALSE, include=FALSE}
+
+## Install Libraries
+# library(devtools)  # Need devtools loaded in order to install packages from GitHub. 
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+for (pkg in c(#"devtools", "dada2", "phyloseq", 
+              "ALDEx2")) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    BiocManager::install(pkg)
+  }
+}
+devtools::install_github("ggloor/CoDaSeq/CoDaSeq")
+devtools::install_github("kstagaman/phyloseqCompanion")
+
+```
+
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+
+# Load Libraries
+
+## General Purpose
+library(knitr)  # For knitting documents to HTML or PDF formats
+library(tinytex)  # LaTex stuff for Rmarkdown
+library(data.table)  # Handle data tables
+library(tidyverse)  # Making your code look pretty and tidy
+library(reshape2)  # for reshaping data using melt()
+library(rcompanion)  # various functions, transformTukey()
+
+## Figures/Tables
+library(ggplot2)  # For plotting pretty graphs
+library(CoDaSeq)  # For CLR transformations, PCOA plots
+library(gridExtra)  # use marrangeGrob, for combining plots
+library(ggbeeswarm)  # Pretty dots on box plots
+
+## Microbiome Analysis
+library(phyloseq)  # For microbiome analysis and plotting functions
+library(phyloseqCompanion)  # helper functions for manipulating phyloseq objects
+library(nortest)  # Allows us to run ad.test()
+library(picante)  # Allows us to use pd() to calc phylogenetic diversity
+
+```
+
+
+# Background
+
+Here is some context to the script, that hopefully adds some clarity to why things are done the way they are.
+
+## Code Chunks
+
+I've split the code into the major steps, and then further by "Save Function" and "Run Function" because normally I save my functions to a separate script that I call using `source()`, but for simplicity I've included everything into one document.
+
+## Naming Conventions
+
+I follow my own brand of naming convetions, which may differ from yours. 
+
+**Variables:** 
+
+Generally: `<highLevelVarType>.<subtype>.<subset>.<variables>.<Modifications>`
+
+* Names separated by `.`, going from broad to specific
+* Words following the first word between `.`'s are capitalized
+  * Ex: `thereIsMoreThanOneWord.betweenThePeriods.inThisLongVariableName`
+* Make variable names as succinct as possible
+  * Ex: `multiWord.btPeriod.inVar`
+
+Examples:
+
+* Datatables: `dt.<subtype>.<subset>.<modifications>`  # datatables
+  * Ex: `dt.control.time0`
+  * Ex: `dt.exposed.time0`
+* Dataframes: `df.<subtype>.<subset>.<modifications>` # dataframes
+* Plots/figures: `plot.<subset>.<y-var>.<x-vars...>`  # plots/figures
+  * plot.betaDiv.
+* Tables: `table.<subset>.<y-var>.<x-vars...>`  # tables
+* Models (lm, glm, etc.): `mod.<subtype>.<subset>.<y>.<x-vars...>`  # models (lm, glm, etc.)
+* Phyloseq objects: `ps.<subtype>.<subset>`  # phyloseq objects
+
+**Functions:**
+
+* Same concept with variables, but use `_`'s instead of `.`'s
+* Should be descriptive, but short enough to know the main task of the function
+
+
+# Import and Clean Data
+
+## Phyloseq Object
+
+```{r}
+# Example data
+data(GlobalPatterns)
+
+# Load phyloseq object
+ps.all <- GlobalPatterns
+
+# View sample data
+view(sample.data.frame(ps.all))
+```
+
+
+## Clean PS Obj
+
+If you need to clean phyloseq object for whatever reason (e.g., rarefying, normalizing, update column names etc.), you'd want to do that ahead of making data tables/frames. 
+
+```{r}
+
+# Remove columns, if rownames are already sample names, no need to have an extra sample column
+sample_data(ps.all) <- sample_data(ps.all)[, c(-1)]  # [rows, cols]
+
+
+# Rename sample column one at a time by name
+# colnames(sample_data(ps.all))[colnames(sample_data(ps.all)) == "X.SampleID"] <- "Sample"
+
+
+# Rename all columns
+# colnames(sample_data(ps.all)) <- c()  # c("colName1", "colName2", ...)
+
+# Check that renaming worked
+# view(sample.data.frame(ps.all))
+```
+
+
+## Create sample data tables/frames
+```{r}
+
+# Load Sample Data
+df.all <- sample.data.frame(ps.all)  # Dataframe
+dt.all <- sample.data.table(ps.all)  # Datatable
+
+```
+
+
+# Calculate Alpha Scores
+
+## Save Function
+
+This is the function that does the alpha diversity score calculations.
+
+```{r func-calc-alpha-scores}
+
+# Calculate Alpha Scores --------------------------------------------------
+#   Description: Generates alpha diversity scores from a list of alpha methods
+#   Input: phyloseq object, list of alpha div. methods, 
+#   Output: dataframe of alpha-diversity scores
+
+alpha_base <- function(
+  physeq,  # Phyloseq object
+  methods,  # List of alpha methods (e.g., c(Shannon, Simpson, Observed) )
+  smpl.col.name = "Sample",  # Default is "Sample" but you can change it to whatever when you call the function 
+  phylo.div = F  # Only set to true if you have phylogenetic information attached to your phyloseq object
+  ){
+  
+  # Calculates alpha scores
+  tmp.dt <- phyloseq::estimate_richness(
+    physeq = physeq,  # Physeq object
+    measures = methods[1:(length(methods)-1)]
+  ) %>% as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # Sets sample column name to whatever you've called it (e.g., "Sample" or "Sample.ID")
+  tmp.dt[, se.chao1 := NULL] # No idea what this does, but it's from Keatons code and I think it's important if you calculate se.chao1 scores
+  
+  # If you have phylogenetic information in your phyloseq object you'll want to set phylo.div to true
+  if(isTRUE(phylo.div)){
+    
+    # Calculate the sum of the total phylogenetic branch length for one or multiple samples. See ?picante::pd() for more info
+    #   - Returns a dataframe of the PD and species richness (SR) values for all samples
+    phy.dt <- picante::pd(samp = otu.matrix(physeq), tree = phyloseq::phy_tree(physeq)) %>%
+      as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # set col name
+    
+    # Names the columns by alpha method
+    # names(phy.dt)[(length(phy.dt)-1):length(phy.dt)] <- methods[length(methods)]  #methods[(length(methods)-1):length(methods)]
+    names(phy.dt)[2:3] <- methods[(length(methods)-1):length(methods)]
+    tmp.dt[phy.dt] # adds the columns to the other dataframe with the previously calculated alpha scores
+    
+    # return to sender
+    return (tmp.dt[phy.dt])
+  }
+  
+  # Returns alpha scores datatable
+  return (tmp.dt)
+}
+
+```
+
+
+## Running Function
+
+Set alpha methods: 
+```{r set-alpha-methods}
+# Which alpha indices do you want to use?
+#   - Uncomment out the code that you want to use
+
+## Here is an example for phyloseq object without phylogenetic data
+# methods.alpha <- c("Observed", "Shannon", "Simpson") %>%  # Add additional measures here. You can find other measures here: ?estimate_richness()
+#   purrr::set_names()
+
+
+## Here is an example for phyloseq objects with phylogenetic data
+#    - You can find different measures here: ?estimate_richness()
+
+methods.alpha <- c("Shannon", "Simpson", # Non-phylogenetic measures, add additional measures here
+                   "Phylogenetic", "Richness") %>%  # Don't add measures additional. You can find different measures here: ?estimate_richness()
+                  purrr::set_names()  # Set's names list elements in "alpha.methods"
+
+  
+```
+
+Calculate alpha scores: 
+
+```{r calc-alpha-scores}
+# Calculate raw alpha scores
+#   Note: if you don't include se.chao1, it will throw a warning. No biggie
+
+dt.alphaScores.all <- alpha_base(physeq = ps.all,  # Phyloseq object
+                                 methods = methods.alpha,  # List of alpha methods
+                                 smpl.col.name = "Sample",  # Default is "Sample" but you can change it to name of sample column
+                                 phylo.div = T  # Set to true if your physeq obj has phylogenetic information
+                                 )
+
+# Check that scores were calculated
+head(dt.alphaScores.all)
+```
+
+
+
+# Normalize Alpha Scores
+
+## Save Function
+
+```{r function-norm-alpha-scores}
+
+# Normalize Alpha Scores --------------------------------------------------
+#   Description: normalizes alpha diversity scores based on their distributions
+#   Input: dataframe of alpha diversity scores, metadata table
+#   Output: normalized datatable of alpha scores (0 to 1)
+
+norm_alpha_score <- function(
+  alpha.base, 
+  sample.df, 
+  methods,
+  smpl.col.name = "Sample"
+  ){
+  
+  # Makes a copy of the dataframe you input and adds a column for your sample IDs
+  model.data.base <- copy(alpha.base[alpha.base[[smpl.col.name]] %in% 
+                                       row.names(sample.df)])
+  
+  # Loops through the different alpha methods
+  for (alpha in methods) {
+    
+    # ad.test(): Performs the Anderson-Darling test for the composite hypothesis of normality
+    #   - Basically checking to see if the alpha score distribution that was calculated previously follows a normal distribution or not
+    #   - Check this out for more info: ?ad.test()
+    if (nortest::ad.test(model.data.base[[alpha]])$p.value <= 0.05) {
+      
+      # If the alpha scores do not follow a normal distribution, then you transform it using Tukey's (not Turkey's) power of ladders
+      #   - This will transform your data as closely to a normal distribution
+      
+      # Sub-function to transform data that isn't normally distributed using Tukey's (not Turkey's) power of ladders
+      #   - Check this out for more info: ?transformTukey()
+      trans <- rcompanion::transformTukey(model.data.base[[alpha]], plotit = F, quiet = F, statistic = 2)
+      trans <- (trans-min(trans))/(max(trans)-min(trans))   # Fixes normalization 0 to 1
+      
+      # Runs ad.test again to see if data returns higher than 0.05 p-value, if true then it transforms your data along tukey's power of ladders
+      if (nortest::ad.test(trans)$p.value > 0.05) {
+        model.data.base[[alpha]] <- trans  # Transorm data with transformTukey() above
+        print(paste0("Finished: ", alpha))  # Letting you know what it's working on
+        
+        # If your data is now normally distributed it will return < 0.05 p.val, and then it uses max/min values to distribute the scores along a 0 and 1 scale.
+      } else {
+        model.data.base[[alpha]] <- (model.data.base[[alpha]] - min(model.data.base[[alpha]] ))/(max(model.data.base[[alpha]] )-min(model.data.base[[alpha]] ))  # Fixes normalization 0 to 1
+        print(paste0("Finished: ", alpha))  # Letting you know what it's working on
+      } 
+      
+    # If your data is already normally distributed, then it uses max/min values to distribute the scores along a 0 and 1 scale.
+    } else {
+      model.data.base[[alpha]] <- (model.data.base[[alpha]] - min(model.data.base[[alpha]] ))/(max(model.data.base[[alpha]] )-min(model.data.base[[alpha]] ))  # Fixes normalization 0 to 1
+      print(paste0("Finished: ", alpha))  # Letting you know what it's working on
+    }
+  }
+  
+  # Sends your data back normalized from 0 to 1
+  return(model.data.base)
+}
+
+```
+
+
+## Run Function
+
+Normalizing scores from 0 to 1 for easier comparison across metrics.
+
+Under the hood, we use the functions `descdist` and `fitdist` (`fitdistrplus` package) to determine that the best distribution for the alpha-diversity metric scores were almost always the beta distribution. This distribution is not directly supported by the `glm` function (used in later data analysis) but is approximated by the `quasibinomial` family. These distributions only take values from 0 to 1, so we divide all alpha-diversity scores by the max score for each metric.
+
+```{r norm-alpha-scores}
+# Normalize scores from 0 to 1 for easier comparison across metrics
+#   - The test will out put some statistical information about which transformations were done
+
+dt.alphaScores.norm.all <- norm_alpha_score(alpha.base = dt.alphaScores.all,  # Unnormalized alpha scores
+                                            sample.df = df.all,  # sample data frame
+                                            methods = methods.alpha,  # list of alpha methods
+                                            smpl.col.name = "Sample"  # Default is "Sample" but you can change it to name of sample column
+                                            )
+
+# View 
+head(dt.alphaScores.norm.all)
+```
+
+
+# Prepare for Plotting
+
+This creates a combined datatable with your metadata and alpha diversity scores
+
+```{r data-table-metadata-alpha-scores}
+# Create a datatable of alpha scores for melting
+dt.alphaPlus.all <- dt.all[dt.alphaScores.norm.all, on = "Sample"] %>% setkeyv("Sample")
+
+# View
+head(dt.alphaPlus.all)
+```
+
+## Save Function
+
+```{r function-save-melt-datatable}
+
+# Melt Data Table ---------------------------------------------------------
+#   Description: Melts sample data table for easy plotting
+#   Input: normalized alpha scores, alpha methods, variable names
+#   Output: a melted datatable
+
+melt_to_datatable_2 <- function(datatable1, datatable2, vars, var.name, samp.name = "Sample", val.name = "Score"){
+  
+  comb.data <- datatable1[datatable2, on = (samp.name)] %>% setkeyv(samp.name)
+  
+  return( melt(
+    comb.data,  # combined datatables from above
+    measure.vars = vars, # Measure variables for melting. Can be missing, vector, list, or pattern-based.
+    variable.name = var.name, # Name for the measured variable names column.
+    value.name = val.name  # Name for the molten data values column(s).
+  )
+  )
+}
+```
+
+## Run Function
+
+```{r melt-alpha-data-table}
+# Melt data table for easy plotting and statistical analysis
+dt.alphaPlus.all.melt <- melt_to_datatable_2(datatable1 = dt.all, 
+                                         datatable2 = dt.alphaScores.norm.all, 
+                                         vars = methods.alpha, 
+                                         var.name = "Alpha.Metric",
+                                         samp.name = "Sample",
+                                         val.name = "Alpha.Score")
+
+# View
+head(dt.alphaPlus.all.melt)
+```
+
+
+DONE! 
+
+Now if you want to go on to plotting, here are some examples.
+
+# Plotting
+
+## Assign data
+
+I like to assign temporary data variables for each plot/statistical analysis chunk, because in my experience it keeps the code nimble and flexible. 
+
+This avoids situations where you have dozens of variables for each figure, table, etc. Instead, you can add a function at the end of the chunks to export your variables, figures, and tables with unique names, if you want.
+
+```{r plot-setup}
+# Assign a temporary data variable
+data <- dt.alphaPlus.all.melt
+```
+
+### Plot
+
+```{r plot-alphaScore-sampleType}
+plot <- ggplot(data, aes(x = SampleType, y=Alpha.Score)) +
+  geom_boxplot(aes(fill = SampleType)) + 
+  ggbeeswarm::geom_quasirandom() +  # spaces the dots out nicely
+  facet_grid(Alpha.Metric ~ .) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 33, hjust = 1, vjust=1)
+        ) +
+  labs(
+    title = "Diversity Scores",
+    # caption = "",
+    y = "Diversity", #paste0("Diversity (",x ,")"),
+    x = "SampleType"
+  ) 
+
+plot
+
+```
+
+
