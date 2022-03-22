@@ -200,7 +200,7 @@ alpha_base <- function(
       as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # set col name
     
     # Names the columns by alpha method
-    names(phy.dt)[(length(phy.dt)-1):length(phy.dt)] <- methods[length(methods)]
+    names(phy.dt)[(length(phy.dt)-1):length(phy.dt)] <- methods[length(methods)]  # This area may result in errors if additional measures added, untested
     tmp.dt[phy.dt] # adds the columns to the other dataframe with the previously calculated alpha scores
     
     # return to sender
