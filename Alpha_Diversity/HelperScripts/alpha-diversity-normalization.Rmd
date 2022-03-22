@@ -230,7 +230,7 @@ Set alpha methods:
 #    - You can find different measures here: ?estimate_richness()
 
 methods.alpha <- c("Shannon", "Simpson", # Non-phylogenetic measures, add additional measures here
-                   "Phylogenetic", "Richness") %>%  # Don't add measures additional. You can find different measures here: ?estimate_richness()
+                   "Phylogenetic", "Richness") %>%  # Phylogenetic measures
                   purrr::set_names()  # Set's names list elements in "alpha.methods"
 
   
