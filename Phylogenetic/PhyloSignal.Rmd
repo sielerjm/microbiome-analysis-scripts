@@ -1,0 +1,43 @@
+---
+title: "phyloSignal"
+author: "Michael Sieler"
+date: "3/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(phylobase)
+library(phylosignal)
+
+# Example data
+data(GlobalPatterns)
+
+# Load phyloseq object
+ps.test <- GlobalPatterns
+
+ps.test.sub <- phyloseq::subset_taxa(ps.test, Phylum == "Bacteroidetes")
+
+
+#get the tree out of the phyloseq object 'physeq'
+tree <- phy_tree(ps.test.sub)
+
+#remove the node labels to correct non-unique tip label error
+# tree$node.label <- NULL
+
+#remove appropriate metadata from the phyloseq object 'physeq'
+# otu.table <- otu_table(physeq) #sample ID x ASV ID
+# tax.table <- tax_table(physeq) #taxonomy x ASV ID
+sample.data <- as.list(sample_data(ps.test.sub)) #list of relevant metadata (chemistry, location, etc)
+
+#merge the tree and metadata and create a phylo4d object
+tree_4d <- phylo4d(tree, metadata = sample.data, missing.data="warn")
+
+#create a phylo correlogram of the phylo4d object
+pc <- phyloCorrelogram(tree_4d, ci.bs = 1, ci.conf = 0.95)
+```
+
