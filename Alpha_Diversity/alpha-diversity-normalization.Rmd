@@ -422,7 +422,7 @@ plot
 
 ### Functions
 
-```{r}
+```{r functions-statistical-tests}
 
 # gen_glm_anova ---------------------------------------------------
 #   Description: Runs an anova test on a generalized linear model 
@@ -495,9 +495,9 @@ p_val_format <- function(x){
 
 ### Test Results
 
-```{r}
+```{r statistical-test-results}
 
-
+# Build Statistical Model
 mod.list <- lapply(methods.alpha, function(alpha){
   glm( formula = "Alpha.Score ~ SampleType",  # interaction: formula = "Alpha.Score ~ <Variable1>*<Variable2>",
        data = subset(data, Alpha.Metric == alpha),
@@ -516,7 +516,7 @@ lapply(methods.alpha, function(x){
   mod.list[[x]] %>% Anova(type = 2)
 })
 
-# 
+# Publication quality table
 stats_table( lapply(methods.alpha, function(x){
   gen_glm_anova(mod.list[[x]], x)
 }) %>% bind_rows() ) 
