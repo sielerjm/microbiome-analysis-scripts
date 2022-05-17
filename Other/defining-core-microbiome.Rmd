@@ -1,0 +1,124 @@
+---
+title: "Defining a Core Microbiome"
+author: "Michael Sieler"
+date: "3/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("dplyr")
+library("phyloseq")
+```
+
+
+
+```{r }
+# Example data
+data(GlobalPatterns)
+
+# Load phyloseq object
+ps.test <- GlobalPatterns
+```
+
+
+```{r}
+view(sample.data.frame(ps.MK))
+view(otu.data.table(ps.MK))
+view(taxa.data.table(ps.MK))
+```
+
+```{r}
+
+subset_large <- subset_samples(ps.MK, Size == "Large")
+subset_small <- subset_samples(ps.MK, Size == "Small")
+
+asv_count <- function(subset){
+  count = 0
+  while (count <= 1) # from values of 0-1
+    count = count + 0.02 # increment by .02
+    taxa <- filter_taxa(subset, function(x) sum(x > 0) >= (count*nsamples(subset)), prune = FALSE) # subset by increment
+    # phylo <- subset_taxa(taxa, physeq = subset)
+    # return(dim(otu_table(phylo))[1]) # returns number of ASVs
+    return(taxa)
+}
+
+asv_count(subset_large)
+asv_count(subset_small)
+
+function(x) sum(x > 0) >= (count*nsamples(otu_table(subset_large)))
+
+```
+
+```{r}
+count = 0
+subset = ps.test
+while (count <= 1) {
+  count = count + 0.02
+  taxa <- filter_taxa(subset, function(x) sum(x > 0) >= (count*nsamples(subset)), prune = FALSE) # subset by increment
+  print(paste0("count: ", count, " taxa: ", head(taxa)))
+}
+```
+
+
+# Test
+```{r}
+
+# Import PS Obj
+ps.MK <- readRDS(paste0(path.to.psObj, "/spat_size_phylo_rare_5000.rds"))
+
+# Subset ps objects
+subset_large <- subset_samples(ps.MK, Size == "Large")
+subset_small <- subset_samples(ps.MK, Size == "Small")
+
+# Create Function
+asv_count <- function(ps.obj, 
+                      sub.name
+                      ){
+              # Makes a vector of values between 0 and 1, increasing by 0.02 for each successive index
+              cutoff.lvls = seq(from = 0, to = 1, by = 0.02)
+              
+              # Count cumulative sums for each cutoff level
+              # lapply iterates through each cutoff level in "cutoff.lvls"
+              tmp.sums <- lapply(cutoff.lvls, function(cutoff){
+                              # Returns true/false if a particular ASV is present in cutoff_level*number_samples(ps.obj)
+                              #   eg. cutoff = 0.02, is an asv present in 2% of the samples? If yes, return True.
+                              tmp.isPresent <- filter_taxa(ps.obj, function(x) sum(x > 0) >= (cutoff*nsamples(ps.obj)), prune = FALSE)
+                              
+                              # What is the sum of ASVs present at each cutoff level.
+                              tmp.sumPresent <- sum(tmp.isPresent)
+                            })
+              
+              # Make a dataframe with cutoff levels, sum values, and size group
+              tmp.df <- data.frame(Percent_samples = cutoff.lvls,
+                                   Number_of_ASVs = unlist(tmp.sums, recursive = F),
+                                   Size = sub.name)
+  
+  return(tmp.df)
+}
+
+# Run function for each size group
+df.large <- asv_count(subset_large, "Large")
+df.small <- asv_count(subset_small, "Small")
+
+
+# Combine dataframes
+df.all <- rbind(df.large, df.small)
+
+# Check the dataframe looks good
+#view(df.all)
+
+# Plot
+df.all %>%
+  ggplot( aes(x=Percent_samples, y=Number_of_ASVs)) +
+    geom_line(aes(color=Size)) +
+    geom_point(aes(color=Size)) + 
+  scale_color_brewer(palette = "Dark2") +
+  labs(title = "Defining a core microbioime",
+       x = "Percent of samples",
+       y = "Number of ASVs",
+       caption = "Michael is the best")
+
+```
+
