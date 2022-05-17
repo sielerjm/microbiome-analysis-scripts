@@ -187,24 +187,25 @@ alpha_base <- function(
   # Calculates alpha scores
   tmp.dt <- phyloseq::estimate_richness(
     physeq = physeq,  # Physeq object
-    measures = methods[1:(length(methods)-1)]
+    measures = methods
   ) %>% as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # Sets sample column name to whatever you've called it (e.g., "Sample" or "Sample.ID")
   tmp.dt[, se.chao1 := NULL] # No idea what this does, but it's from Keatons code and I think it's important if you calculate se.chao1 scores
 
   # If you have phylogenetic information in your phyloseq object you'll want to set phylo.div to true
   if(isTRUE(phylo.div)){
-
+    
+    print("Calculating phylogenetic diversity, takes a while...")
+    
     # Calculate the sum of the total phylogenetic branch length for one or multiple samples. See ?picante::pd() for more info
     #   - Returns a dataframe of the PD and species richness (SR) values for all samples
     phy.dt <- picante::pd(samp = otu.matrix(physeq), tree = phyloseq::phy_tree(physeq)) %>%
-      as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # set col name
+      select(-SR) %>%  # Deselects "SR" (Species Richness) since we already included it.
+      rename(Phylogenetic = PD) %>%  # renames "PD" to "Phylogenetic"
+      as.data.table(keep.rownames = smpl.col.name) %>% setkeyv(smpl.col.name)  # set col name for samples column
 
-    # Names the columns by alpha method
-    names(phy.dt)[(length(phy.dt)):length(phy.dt)] <- methods[length(methods)]  # This area may result in errors if additional measures added, untested
-    tmp.dt <- tmp.dt[phy.dt] # adds the columns to the other dataframe with the previously calculated alpha scores
+    tmp.dt <- tmp.dt %>% 
+      inner_join(., phy.dt, by = smpl.col.name)
     
-    names(tmp.dt)[2:ncol(tmp.dt)] <- methods
-
     # return to sender
     return (tmp.dt)
   }
@@ -214,6 +215,9 @@ alpha_base <- function(
 }
 
 ```
+
+
+
 
 
 ## Running Function
@@ -231,8 +235,8 @@ Set alpha methods:
 ## Here is an example for phyloseq objects with phylogenetic data
 #    - You can find different measures here: ?estimate_richness()
 
-methods.alpha <- c("Shannon", "Simpson", # Non-phylogenetic measures, add additional measures here
-                   "Phylogenetic", "Richness") %>%  # Phylogenetic measures
+methods.alpha <- c("Observed", "Shannon", "Simpson", # Non-phylogenetic measures, add additional measures here
+                   "Phylogenetic") %>%  # Phylogenetic measures
                   purrr::set_names()  # Set's names list elements in "alpha.methods"
 
   
