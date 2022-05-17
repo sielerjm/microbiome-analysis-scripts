@@ -181,7 +181,7 @@ alpha_base <- function(
   physeq,  # Phyloseq object
   methods,  # List of alpha methods (e.g., c(Shannon, Simpson, Observed) )
   smpl.col.name = "Sample",  # Default is "Sample" but you can change it to whatever when you call the function
-  phylo.div = F  # Only set to true if you have phylogenetic information attached to your phyloseq object
+  phylo.div = T  # Only set to false if you don't have phylogenetic information attached to your phyloseq object
 ){
 
   # Calculates alpha scores
