@@ -61,10 +61,12 @@ library(rcompanion)  # various functions, transformTukey()
 ## Figures/Tables
 library(ggplot2)  # For plotting pretty graphs
 library(CoDaSeq)  # For CLR transformations, PCOA plots
+library(flextable)  # for making pretty tables, flextable()
 library(gridExtra)  # use marrangeGrob, for combining plots
 library(ggbeeswarm)  # Pretty dots on box plots
 
 ## Microbiome Analysis
+library(broom)  # Helps for tidying up datatables. tidy()
 library(phyloseq)  # For microbiome analysis and plotting functions
 library(phyloseqCompanion)  # helper functions for manipulating phyloseq objects
 library(nortest)  # Allows us to run ad.test()
@@ -76,7 +78,7 @@ library(tidyverse)  # Making your code look pretty and tidy
 ```
 
 
-# Background
+## Background
 
 Here is some context to the script, that hopefully adds some clarity to why things are done the way they are.
 
@@ -84,7 +86,7 @@ Here is some context to the script, that hopefully adds some clarity to why thin
 
 I've split the code into the major steps, and then further by "Save Function" and "Run Function" because normally I save my functions to a separate script that I call using `source()`, but for simplicity I've included everything into one document.
 
-## Naming Conventions
+### Naming Conventions
 
 I follow my own brand of naming convetions, which may differ from yours. 
 
@@ -116,9 +118,9 @@ Examples:
 * Should be descriptive, but short enough to know the main task of the function
 
 
-# Import and Clean Data
+## Import and Clean Data
 
-## Phyloseq Object
+### Phyloseq Object
 
 ```{r}
 # Example data
@@ -132,7 +134,7 @@ view(sample.data.frame(ps.all))
 ```
 
 
-## Clean PS Obj
+### Clean PS Obj
 
 If you need to clean phyloseq object for whatever reason (e.g., rarefying, normalizing, update column names etc.), you'd want to do that ahead of making data tables/frames. 
 
@@ -154,7 +156,7 @@ sample_data(ps.all) <- sample_data(ps.all)[, c(-1)]  # [rows, cols]
 ```
 
 
-## Create sample data tables/frames
+### Create sample data tables/frames
 ```{r}
 
 # Load Sample Data
@@ -164,9 +166,9 @@ dt.all <- sample.data.table(ps.all)  # Datatable
 ```
 
 
-# Calculate Alpha Scores
+## Calculate Alpha Scores
 
-## Save Function
+### Save Function
 
 This is the function that does the alpha diversity score calculations.
 
@@ -220,7 +222,7 @@ alpha_base <- function(
 
 
 
-## Running Function
+### Running Function
 
 Set alpha methods: 
 ```{r set-alpha-methods}
@@ -260,9 +262,9 @@ head(dt.alphaScores.all)
 
 
 
-# Normalize Alpha Scores
+## Normalize Alpha Scores
 
-## Save Function
+### Save Function
 
 ```{r function-norm-alpha-scores}
 
@@ -323,7 +325,7 @@ norm_alpha_score <- function(
 ```
 
 
-## Run Function
+### Run Function
 
 Normalizing scores from 0 to 1 for easier comparison across metrics.
 
@@ -344,51 +346,33 @@ head(dt.alphaScores.norm.all)
 ```
 
 
-# Prepare for Plotting
+## Prepare for Plotting
 
 This creates a combined datatable with your metadata and alpha diversity scores
 
 ```{r data-table-metadata-alpha-scores}
 # Create a datatable of alpha scores for melting
-dt.alphaPlus.all <- dt.all[dt.alphaScores.norm.all, on = "Sample"] %>% setkeyv("Sample")
+dt.alphaPlus.all <- dt.all %>%
+                      inner_join(., dt.alphaScores.norm.all, by = "Sample")
 
 # View
 head(dt.alphaPlus.all)
 ```
 
-## Save Function
 
-```{r function-save-melt-datatable}
 
-# Melt Data Table ---------------------------------------------------------
-#   Description: Melts sample data table for easy plotting
-#   Input: normalized alpha scores, alpha methods, variable names
-#   Output: a melted datatable
-
-melt_to_datatable_2 <- function(datatable1, datatable2, vars, var.name, samp.name = "Sample", val.name = "Score"){
-  
-  comb.data <- datatable1[datatable2, on = (samp.name)] %>% setkeyv(samp.name)
-  
-  return( melt(
-    comb.data,  # combined datatables from above
-    measure.vars = vars, # Measure variables for melting. Can be missing, vector, list, or pattern-based.
-    variable.name = var.name, # Name for the measured variable names column.
-    value.name = val.name  # Name for the molten data values column(s).
-  )
-  )
-}
-```
-
-## Run Function
+### Combine Alpha Scores into One Column
 
 ```{r melt-alpha-data-table}
 # Melt data table for easy plotting and statistical analysis
-dt.alphaPlus.all.melt <- melt_to_datatable_2(datatable1 = dt.all, 
-                                         datatable2 = dt.alphaScores.norm.all, 
-                                         vars = methods.alpha, 
-                                         var.name = "Alpha.Metric",
-                                         samp.name = "Sample",
-                                         val.name = "Alpha.Score")
+
+dt.alphaPlus.all.melt <- dt.alphaPlus.all %>%
+                            pivot_longer(cols = methods.alpha,    # List of column names containing alpha metrics and scores e.g. c("Observed", "Shannon", "Simpson") or methods.alpha
+                                         names_to = "Alpha.Metric",   # Column name for alpha metrics
+                                         values_to = "Alpha.Score"  # Column name for alpha scores
+                                         ) %>% 
+                            arrange(Alpha.Metric)  # Sort datatable by alpha metric
+
 
 # View
 head(dt.alphaPlus.all.melt)
@@ -399,9 +383,9 @@ DONE!
 
 Now if you want to go on to plotting, here are some examples.
 
-# Plotting
+## Plotting
 
-## Assign data
+### Assign data
 
 I like to assign temporary data variables for each plot/statistical analysis chunk, because in my experience it keeps the code nimble and flexible. 
 
@@ -412,7 +396,7 @@ This avoids situations where you have dozens of variables for each figure, table
 data <- dt.alphaPlus.all.melt
 ```
 
-### Plot
+#### Plot
 
 ```{r plot-alphaScore-sampleType}
 plot <- ggplot(data, aes(x = SampleType, y=Alpha.Score)) +
@@ -433,4 +417,109 @@ plot
 
 ```
 
+
+## Statistical Analysis
+
+### Functions
+
+```{r}
+
+# gen_glm_anova ---------------------------------------------------
+#   Description: Runs an anova test on a generalized linear model 
+#   Input: model, alpha methods, filter pvalues
+#   Output: anova statistical results
+
+gen_glm_anova <- function(tmp.mod, tmp.metric, filt.pval = 1){
+  return(Anova(tmp.mod, type = 2) %>%
+           tidy() %>%
+           mutate(sig = ifelse(p.value <= 0.05, "*", "")) %>%
+           mutate(metric = tmp.metric, .before = 1) %>%
+           filter((p.value < filt.pval | is.na(p.value)) & df > 0) %>%
+           arrange(desc(statistic))  # highest to lowest effect size
+  )
+}
+
+
+# Stats Table -------------------------------------------------------
+#   Description: produces a statistical table from anova stats
+#   Input: anova results, variables, terms
+#   Output: statistical table of anova results 
+
+stats_table <- function(dataframe, terms = NA, hline.num = NA, formula = NA, stat.desc = F){
+  
+  # Arrange dataframe by most to least significant
+  if(!"sig" %in% colnames(dataframe)){
+    dataframe<- dataframe %>%
+      tidy() %>%
+      mutate(sig = ifelse(p.value <= 0.05, "*", "")) %>%
+      # arrange(desc(statistic))  # highest to lowest effect size
+      arrange(if(!isTRUE(stat.desc)) TRUE else desc(statistic)) 
+  }
+  
+  if(is.na(hline.num)){
+    hline.num = seq(1, nrow(dataframe) -1)
+  } 
+
+  
+  # caption <- paste0("beta score ~ (", paste0(var, collapse = "+"), ")^", terms)
+  return (dataframe %>%
+            flextable() %>%
+            set_caption(caption = ifelse(is.na(formula), "", formula)) %>%
+            #set_caption(caption = table.caption(caption)) %>%  # Uses autoNumCaptions
+            # align(j = c(1, ncol(dataframe)), align = "left") %>%
+            align(j = 2:5, align = "right") %>%
+            colformat_double(j = 3, digits = 2) %>%
+            colformat_double(j = 5, digits = 3) %>%
+            merge_v(j = 1) %>%
+            hline(i = hline.num, j = NULL, border = NULL, part = "body") %>%
+            set_formatter(values = list("p.value" = p_val_format) ) %>%
+            autofit()
+  )
+}
+
+
+# P-value Format ----------------------------------------------------------
+#   Description: Formats P-values for summary statistic tables
+#     * P-values below a certain threshold will appear as "<0.001"
+#   Input: 
+#   Output: 
+
+p_val_format <- function(x){
+  z <- scales::pvalue_format()(x)
+  z[!is.finite(x)] <- ""
+  z
+}
+
+
+```
+
+### Test Results
+
+```{r}
+
+
+mod.list <- lapply(methods.alpha, function(alpha){
+  glm( formula = "Alpha.Score ~ SampleType",  # interaction: formula = "Alpha.Score ~ <Variable1>*<Variable2>",
+       data = subset(data, Alpha.Metric == alpha),
+       family = "quasibinomial")
+})
+
+
+# Statistical Table of Model
+lapply(methods.alpha, function(x){
+  mod.list[[x]] %>% summary() 
+})
+
+
+# Statistical Power of Model
+lapply(methods.alpha, function(x){
+  mod.list[[x]] %>% Anova(type = 2)
+})
+
+# 
+stats_table( lapply(methods.alpha, function(x){
+  gen_glm_anova(mod.list[[x]], x)
+}) %>% bind_rows() ) 
+
+```
 
