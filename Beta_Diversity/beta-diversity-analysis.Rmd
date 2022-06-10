@@ -1,0 +1,486 @@
+---
+title: "Beta Diversity"
+author: "Michael Sieler"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+
+The code should be able to be ran as is after you've installed the required libraries. I included a built-in dataset from the `Phyloseq` package called `GlobalPatterns` that will allow you to test the script before using your own phyloseq object. 
+
+If you use this code, please cite Keaton Stagaman's package phyloseqCompanion: `Stagaman, K. phyloseqCompanion: Provides additional functions to work with phyloseq objects. (2022). github.com/kstagaman/phyloseqCompanion`. 
+
+
+## Setup Environment
+```{r setup, include=FALSE}
+# Any default options you want for your Knitted document goes here
+
+knitr::opts_chunk$set(echo = TRUE)
+num.cores = 1
+  
+```
+
+
+```{r install-libraries, eval=FALSE, include=FALSE}
+
+## Install Libraries
+# library(devtools)  # Need devtools loaded in order to install packages from GitHub. 
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+for (pkg in c(#"devtools", "dada2", "phyloseq", 
+              "ALDEx2")) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    BiocManager::install(pkg)
+  }
+}
+
+# Only run if need to install 
+
+# devtools::install_github("ggloor/CoDaSeq/CoDaSeq")
+# devtools::install_github("kstagaman/phyloseqCompanion")
+
+```
+
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+
+# Load Libraries
+
+## General Purpose
+library(knitr)  # For knitting documents to HTML or PDF formats
+library(tinytex)  # LaTex stuff for Rmarkdown
+library(data.table)  # Handle data tables
+library(reshape2)  # for reshaping data using melt()
+library(rcompanion)  # various functions, transformTukey()
+library(parallel)
+
+## Figures/Tables
+library(ggplot2)  # For plotting pretty graphs
+library(CoDaSeq)  # For CLR transformations, PCOA plots
+library(flextable)  # for making pretty tables, flextable()
+library(gridExtra)  # use marrangeGrob, for combining plots
+library(ggbeeswarm)  # Pretty dots on box plots
+
+## Microbiome Analysis
+library(broom)  # Helps for tidying up datatables. tidy()
+library(phyloseq)  # For microbiome analysis and plotting functions
+library(phyloseqCompanion)  # helper functions for manipulating phyloseq objects
+library(nortest)  # Allows us to run ad.test()
+library(picante)  # Allows us to use pd() to calc phylogenetic diversity
+
+## Add last so, other packages don't "mask" tidy functions
+library(tidyverse)  # Making your code look pretty and tidy
+
+```
+
+
+## Background
+
+Here is some context to the script, that hopefully adds some clarity to why things are done the way they are.
+
+## Code Chunks
+
+I've split the code into the major steps, and then further by "Save Function" and "Run Function" because normally I save my functions to a separate script that I call using `source()`, but for simplicity I've included everything into one document.
+
+### Naming Conventions
+
+I follow my own brand of naming convetions, which may differ from yours. 
+
+**Variables:** 
+
+Generally: `<highLevelVarType>.<subtype>.<subset>.<variables>.<Modifications>`
+
+* Names separated by `.`, going from broad to specific
+* Words following the first word between `.`'s are capitalized
+  * Ex: `thereIsMoreThanOneWord.betweenThePeriods.inThisLongVariableName`
+* Make variable names as succinct as possible
+  * Ex: `multiWord.btPeriod.inVar`
+
+Examples:
+
+* Datatables: `dt.<subtype>.<subset>.<modifications>`  # datatables
+  * Ex: `dt.control.time0`
+  * Ex: `dt.exposed.time0`
+* Dataframes: `df.<subtype>.<subset>.<modifications>` # dataframes
+* Plots/figures: `plot.<subset>.<y-var>.<x-vars...>`  # plots/figures
+  * plot.betaDiv.
+* Tables: `table.<subset>.<y-var>.<x-vars...>`  # tables
+* Models (lm, glm, etc.): `mod.<subtype>.<subset>.<y>.<x-vars...>`  # models (lm, glm, etc.)
+* Phyloseq objects: `ps.<subtype>.<subset>`  # phyloseq objects
+
+**Functions:**
+
+* Same concept with variables, but use `_`'s instead of `.`'s
+* Should be descriptive, but short enough to know the main task of the function
+
+
+## Import and Clean Data
+
+### Phyloseq Object
+
+```{r}
+# Example data
+data(GlobalPatterns)
+
+# Load phyloseq object
+ps.all <- GlobalPatterns
+
+# View sample data
+view(sample.data.frame(ps.all))
+```
+
+
+### Clean PS Obj
+
+If you need to clean phyloseq object for whatever reason (e.g., rarefying, normalizing, update column names etc.), you'd want to do that ahead of making data tables/frames. 
+
+```{r}
+
+# Remove columns, if rownames are already sample names, no need to have an extra sample column
+# sample_data(ps.all) <- sample_data(ps.all)[, c(-1)]  # [rows, cols]
+
+
+# Rename sample column one at a time by name
+colnames(sample_data(ps.all))[colnames(sample_data(ps.all)) == "X.SampleID"] <- "Sample"
+
+
+# Rename all columns
+# colnames(sample_data(ps.all)) <- c()  # c("colName1", "colName2", ...)
+
+# Check that renaming worked
+# view(sample.data.frame(ps.all))
+```
+
+
+### Create sample data tables/frames
+```{r}
+
+# Load Sample Data
+df.all <- sample.data.frame(ps.all)  # Dataframe
+dt.all <- sample.data.table(ps.all)  # Datatable
+
+```
+
+## Calculate Beta Diversity Scores
+
+```{r}
+
+# Distance lists
+
+## All
+distList.all <- gen.dist.matrices(ps.all, methods = "taxonomic", cores = num.cores)
+methods.beta <- names(distList.all) %>% set_names(., .)
+
+
+## Subset
+#   Note: if you need to subset your samples by treatment, do so below:
+
+# distList.subset.___ <- gen.dist.matrices(subset_samples(ps.all, ___ == "___"), methods = "taxonomic", cores = num.cores)
+
+
+```
+
+
+
+## Stats
+
+### Functions
+
+```{r}
+full_dbrda_model_2  <- function(vars, distance, methods, names, physeq, data, terms = 1, num.cores = num.cores){  
+  
+  # Starts parallel computing
+  cl <- makeCluster(num.cores, type = "FORK", outfile = "")
+  registerDoParallel(cl, num.cores)
+  
+  # Build full model
+  beta.model.full <- foreach(
+    beta = methods,
+    .final = names,
+    .verbose = TRUE
+  ) %dopar% {
+    # progress_Bar_Start(which(methods == beta), length(methods))  # Progress bar
+    dist.mat <- distance[[beta]]
+    form <- if(length(vars) == 1){
+      paste0("dist.mat ~ ", vars)
+    } else{paste0("dist.mat ~ (", paste0(vars, collapse = "+") ,")^", terms)}
+    print(form)  #  TEST
+    capscale(as.formula(form),
+             data = data,
+             na.action = na.omit # na.omit only non-missing site scores are shown
+             #comm = otu.matrix(physeq)  # Error might originate here, I think
+    )
+  }
+  
+  stopCluster(cl)
+  return(beta.model.full)
+  
+}
+
+beta_anova <- function(beta.model, methods, names, num.cores = num.cores){
+  
+  # Assigns number of cores/threads for parallel computing (aka %dopar%) 
+  # num.cores = 4
+  cl <- makeCluster(num.cores, type = "FORK", outfile = "")
+  registerDoParallel(cl, num.cores)
+  
+  # Anova
+  res <- foreach(
+    beta = methods,
+    .final = names,
+    .verbose = TRUE
+  ) %dopar% {
+    mod <- beta.model[[beta]]
+    anova(mod, by = "term") %>% 
+      tidy() %>% 
+      mutate(sig = ifelse(p.value <= 0.05, "*", "")) %>%
+      mutate(metric = beta, .before = 1) %>%
+      arrange(desc(statistic))  # highest to lowest effect size 
+  } %>%
+    bind_rows()
+  
+  stopCluster(cl)
+  return(res)
+}
+
+
+# Homogeneity of Dispersion  -------------------------------------------------
+#   Description: 
+#   Input: 
+#   Output: Statistical results
+
+beta_hom_disper <- function(data, physeq, vars, methods = "bray", plot = F, factor = F){
+  
+  tmp.list <- list()
+  
+  # Temp workaround in the case that data needs to be "factorized"
+  if(isTRUE(factor)){
+    data$vars <- factor(data[[vars]])
+  }
+  
+  for (m in methods) {
+    # print(m)
+    tmp.dist <- phyloseq::distance(physeq, method = m)
+    # print(tmp.dist)
+    tmp.mod <- betadisper(tmp.dist, data[[vars]])
+    tmp.anova <- anova(tmp.mod)
+    tmp.permTest <- permutest(tmp.mod, pairwise = TRUE, permutations = 999) 
+    tmp.mod.HSD <- TukeyHSD(tmp.mod)
+    
+    cat("\n")
+    print(paste0("Method: ", m))
+    # print(tmp.anova)
+    print(tmp.permTest) 
+    # tmp.permTest %>% pander()
+    # tmp.list[m] <- c(tmp.permTest)
+    
+    if(isTRUE(plot)){
+      # plot(tmp.mod)
+      boxplot(tmp.mod)
+      # plot(tmp.mod.HSD)
+    }
+    
+  }
+  # tmp.dist <- phyloseq::distance(physeq, method = methods)
+  # tmp.mod <- betadisper(tmp.dist, data[[vars]])
+  # tmp.permTest <- permutest(tmp.mod, pairwise = TRUE, permutations = 99)
+  
+  # return(tmp.mod)
+}
+
+# Stats Table -------------------------------------------------------
+#   Description: produces a statistical table from anova stats
+#   Input: anova results, variables, terms
+#   Output: statistical table of anova results 
+
+stats_table <- function(dataframe, terms = NA, hline.num = NA, formula = NA, stat.desc = F){
+  
+  # Arrange dataframe by most to least significant
+  if(!"sig" %in% colnames(dataframe)){
+    dataframe<- dataframe %>%
+      tidy() %>%
+      mutate(sig = ifelse(p.value <= 0.05, "*", "")) %>%
+      # arrange(desc(statistic))  # highest to lowest effect size
+      arrange(if(!isTRUE(stat.desc)) TRUE else desc(statistic)) 
+  }
+  
+  if(is.na(hline.num)){
+    hline.num = seq(1, nrow(dataframe) -1)
+  } 
+
+  
+  # caption <- paste0("beta score ~ (", paste0(var, collapse = "+"), ")^", terms)
+  return (dataframe %>%
+            flextable() %>%
+            set_caption(caption = ifelse(is.na(formula), "", formula)) %>%
+            #set_caption(caption = table.caption(caption)) %>%  # Uses autoNumCaptions
+            # align(j = c(1, ncol(dataframe)), align = "left") %>%
+            align(j = 2:5, align = "right") %>%
+            colformat_double(j = 3, digits = 2) %>%
+            colformat_double(j = 5, digits = 3) %>%
+            merge_v(j = 1) %>%
+            hline(i = hline.num, j = NULL, border = NULL, part = "body") %>%
+            set_formatter(values = list("p.value" = p_val_format) ) %>%
+            autofit()
+  )
+}
+
+
+p_val_format <- function(x){
+  z <- scales::pvalue_format()(x)
+  z[!is.finite(x)] <- ""
+  z
+}
+
+set_names_beta <- function(x) {
+  setNames(x, methods.beta)
+  }
+
+
+```
+
+
+### Tests
+
+#### Keaton Method
+
+```{r}
+
+data <- df.all
+ps.obj <- ps.all
+dist <- distList.all
+
+
+# Full dbRDA models
+mod <- full_dbrda_model_2(vars = c("SampleType"),  # Enter variables as a list "c(var.A, var.B, var.C)"
+                          distance = dist,
+                          methods = methods.beta,
+                          names = set_names_beta,
+                          physeq = ps.obj,
+                          data = data,
+                          terms = 1,  # if you want interaction terms enter 2, otherwise 1
+                          num.cores = num.cores)
+
+anova <- beta_anova(beta.model = mod,
+                    methods = methods.beta,
+                    names = set_names_beta,
+                    num.cores = num.cores)
+
+```
+
+#### Other Methods
+
+```{r}
+
+dist <- dist(ps.all)
+
+test.dist <- ordinate(ps.all, "NMDS", "bray")
+
+adonis(formula = distList.all[["Bray-Curtis"]] ~ SampleType, data = data)
+
+anova(betadisper(distList.all[["Bray-Curtis"]], data$SampleType)) 
+
+
+
+```
+
+
+
+### Results
+
+```{r}
+
+# Stats Table
+stats_table(anova)
+
+
+```
+
+
+
+
+
+## Plots
+
+### Functions
+
+```{r}
+#Ordination data table list ---------------------------------------------
+#   Description: 
+#   Input: 
+#   Output: 
+
+ord_dt_list <- function(model, physeq){
+  return(
+    lapply(model, function(model) {
+      get.biplot.data(ps = physeq, ord = model)})
+  )
+  
+}
+
+
+
+# Sample Coordinate Datatable ---------------------------------------------
+#   Description: 
+#   Input: 
+#   Output: 
+
+samp_coord_dt <- function(ord.datatable.list, names){
+  
+  print(paste0("names: ", names))  # TEST
+  
+  sample.coord.dt <- lapply(names(ord.datatable.list), function(beta) {  # CHANGE
+      ord.datatable.list[[beta]]$sample.coords[, Dist := beta]
+      return(ord.datatable.list[[beta]]$sample.coords)
+    }) %>% rbindlist()
+    
+  sample.coord.dt[
+    , Dist := factor(Dist, levels = names(names)[c(1:length(names))]) ]
+  
+  return(sample.coord.dt)
+}
+
+
+# Axis Labels -------------------------------------------------------------
+#   Description: 
+#   Input: 
+#   Output: 
+
+axis_labels <- function(ord.datatable.list){
+  return(axis.labels <- lapply(names(ord.datatable.list), function(beta) {
+    data.table(
+      Dist = beta,
+      X.lab = ord.datatable.list[[beta]]$axes.labs[1],
+      Y.lab = ord.datatable.list[[beta]]$axes.labs[2]
+    )
+  })  %>% rbindlist())
+}
+
+
+```
+
+
+### Prepare Plots
+
+```{r}
+
+# Plot prep
+dt.ord.full.beta <- ord_dt_list(model = mod, physeq = ps.obj)
+beta.dt.full <- samp_coord_dt(dt.ord.full.beta, methods.beta)
+beta.axis.full <- axis_labels(dt.ord.full.beta)
+
+
+```
+
+### Display Plots
+
+```{r}
+
+```
+
+```{r}
+
+```
+

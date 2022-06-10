@@ -1,23 +1,25 @@
 ---
-title: "alpha-diversity-normalization"
+title: "Alpha Diversity Norm and Transform"
 author: "Michael Sieler"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
   html_document:
     toc: yes
     toc_depth: 3
     number_sections: yes
     theme: united
     highlight: tango
-  pdf_document:
-    toc: yes
-    toc_depth: '3'
 ---
 
 The code should be able to be ran as is after you've installed the required libraries. I included a built-in dataset from the `Phyloseq` package called `GlobalPatterns` that will allow you to test the script before using your own phyloseq object. 
 
+If you use this code, please cite Keaton Stagaman's package phyloseqCompanion: `Stagaman, K. phyloseqCompanion: Provides additional functions to work with phyloseq objects. (2022). github.com/kstagaman/phyloseqCompanion`. 
 
-# Setup Environment
+
+## Setup Environment
 ```{r setup, include=FALSE}
 # Any default options you want for your Knitted document goes here
 
